@@ -1,0 +1,119 @@
+#!/bin/bash
+# codeflow — single public entrypoint for the Codeflow skill
+#
+# This is intentionally thin: it routes subcommands to deterministic internal scripts.
+# Breaking change: direct use of legacy scripts under scripts/ is no longer supported.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INTERNAL_DIR="$SCRIPT_DIR/_internal"
+BIN_DIR="$INTERNAL_DIR/bin"
+PY_DIR="$INTERNAL_DIR/py"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  codeflow <command> [args...]
+
+Commands:
+  run       Run a relay session (dev-relay)
+  guard     Guard operations: activate|deactivate|status
+  resume    Replay a previous session from its stream.jsonl
+  review    PR review mode
+  parallel  Parallel tasks mode
+  bridge    Discord gateway bridge (optional)
+  check     Developer checks (syntax + unit tests)
+  smoke     Prereq/config smoke test
+
+Examples:
+  codeflow run -w ~/projects/app -- codex exec --json --full-auto 'fix tests'
+  codeflow guard activate -P telegram --tg-chat <id> --tg-thread <topic_id_optional>
+  codeflow resume -P telegram --tg-chat <id> /tmp/dev-relay.XXXXXX
+  codeflow review -P discord https://github.com/org/repo/pull/123
+  codeflow parallel -P discord tasks.txt
+EOF
+}
+
+require_internal() {
+  local path="$1"
+  if [ ! -e "$path" ]; then
+    echo "❌ Error: internal component missing: $path" >&2
+    echo "This Codeflow installation looks incomplete." >&2
+    exit 2
+  fi
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  ""|-h|--help|help)
+    usage
+    exit 0
+    ;;
+
+  run)
+    shift
+    require_internal "$BIN_DIR/dev-relay.sh"
+    exec bash "$BIN_DIR/dev-relay.sh" "$@"
+    ;;
+
+  guard)
+    shift || true
+    action="${1:-}"
+    shift || true
+    require_internal "$BIN_DIR/dev-relay.sh"
+    case "$action" in
+      activate)   exec bash "$BIN_DIR/dev-relay.sh" --activate "$@" ;;
+      deactivate) exec bash "$BIN_DIR/dev-relay.sh" --deactivate "$@" ;;
+      status)     exec bash "$BIN_DIR/dev-relay.sh" --guard-status "$@" ;;
+      *) echo "Error: unknown guard action '$action' (expected activate|deactivate|status)" >&2; exit 2 ;;
+    esac
+    ;;
+
+  resume)
+    shift || true
+    require_internal "$BIN_DIR/dev-relay.sh"
+    # Contract: relay dir must be the last argument; any flags must come before it.
+    [ "$#" -lt 1 ] && { echo "Error: resume requires a relay directory" >&2; exit 2; }
+    args=("$@")
+    resume_dir="${args[$((${#args[@]} - 1))]}"
+    unset 'args[$((${#args[@]} - 1))]'
+    exec bash "$BIN_DIR/dev-relay.sh" "${args[@]}" --resume "$resume_dir"
+    ;;
+
+  review)
+    shift
+    require_internal "$BIN_DIR/review-pr.sh"
+    exec bash "$BIN_DIR/review-pr.sh" "$@"
+    ;;
+
+  parallel)
+    shift
+    require_internal "$BIN_DIR/parallel-tasks.sh"
+    exec bash "$BIN_DIR/parallel-tasks.sh" "$@"
+    ;;
+
+  bridge)
+    shift
+    require_internal "$PY_DIR/discord-bridge.py"
+    exec env PYTHONPATH="$PY_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 "$PY_DIR/discord-bridge.py" "$@"
+    ;;
+
+  check)
+    shift
+    require_internal "$BIN_DIR/check.sh"
+    exec bash "$BIN_DIR/check.sh" "$@"
+    ;;
+
+  smoke)
+    shift
+    require_internal "$BIN_DIR/test-smoke.sh"
+    exec bash "$BIN_DIR/test-smoke.sh" "$@"
+    ;;
+
+  *)
+    echo "Error: unknown command '$cmd'" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

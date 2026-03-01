@@ -1,0 +1,25 @@
+# Codeflow: local secrets / runtime state (never commit)
+/scripts/.webhook-url
+/scripts/.bot-token
+
+/scripts/.dev-relay-state.json
+/scripts/.dev-relay-state.json.lock
+
+/scripts/.codeflow-state.json
+/scripts/.codeflow-state.json.lock
+
+/scripts/.codecast-guard.json
+/scripts/.codecast-guard.json.lock
+
+/scripts/.codeflow-guard.json
+/scripts/.codeflow-guard.json.lock
+
+/scripts/.codecast-audit.log
+/scripts/.codecast-audit.log.lock
+
+/scripts/.codeflow-audit.jsonl
+/scripts/.codeflow-audit.jsonl.lock
+
+# Python bytecode
+__pycache__/
+*.pyc
