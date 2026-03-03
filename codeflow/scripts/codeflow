@@ -28,6 +28,8 @@ Commands:
 
 Examples:
   codeflow run -w ~/projects/app -- codex exec --json --full-auto 'fix tests'
+  codeflow run -w ~/projects/app -- codex exec --json --full-auto - < prompt.txt
+  codeflow run -w ~/projects/app -- claude -p --output-format stream-json --verbose < prompt.txt
   codeflow guard activate -P telegram --tg-chat <id> --tg-thread <topic_id_optional>
   codeflow resume -P telegram --tg-chat <id> /tmp/dev-relay.XXXXXX
   codeflow review -P discord https://github.com/org/repo/pull/123

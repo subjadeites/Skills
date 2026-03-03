@@ -72,8 +72,14 @@ Under `/codeflow`, avoid asking for workdir/platform/chat if derivable from cont
 Launch with `exec background:true`. Background exec sessions survive agent turns. Exit notifications (e.g. `notifyOnExit`) are provided by the host runtime (OpenClaw), not by Codeflow itself.
 
 ```bash
-exec background:true command:"{baseDir}/scripts/codeflow run -w ~/projects/myapp -- claude -p --dangerously-skip-permissions --output-format stream-json --verbose 'Your task here'"
+exec background:true command:"cat <<'PROMPT' | {baseDir}/scripts/codeflow run -w ~/projects/myapp -- claude -p --dangerously-skip-permissions --output-format stream-json --verbose
+Your task here
+PROMPT"
 ```
+
+Prompt-quoting tip (avoid shell escaping footguns):
+- For Codex, `codex exec` (and `codex exec resume`) reads the prompt from stdin when PROMPT is `-` (or omitted in `exec`). For multi-line prompts or prompts containing shell metacharacters (e.g. backticks), prefer stdin + a quoted heredoc.
+- For Claude Code, `claude -p` also supports reading the prompt from stdin; prefer stdin for the same reasons.
 
 Note the session ID from the response — use it to monitor via `process`.
 
@@ -114,6 +120,10 @@ See `bash {baseDir}/scripts/codeflow --help` for the canonical CLI.
 | `--skip-reads` | Hide Read tool events | Off |
 | `--new-session` | For Codex exec: force a new Codex session | auto policy |
 | `--reuse-session` | For Codex exec: require and reuse previous session | auto policy |
+| `--prompt-stdin` | Enforce prompt via stdin for supported headless agents (Codex exec / Claude `-p`) | Auto (OpenClaw → on) |
+| `--prompt-argv` | Allow legacy argv prompt for supported headless agents | Auto (non-OpenClaw → on) |
+
+Prompt mode can also be set via env: `CODEFLOW_PROMPT_MODE=auto|argv|stdin` (default: `auto`).
 
 Rate limiting note (Telegram hardening): parse-stream now routes all delivery through an in-process **delivery governor** with strict 429 handling:
 - Telegram 429 backoff: `next_allowed_at = now + retry_after + 1s` (strictly follows Telegram `retry_after`; adds +1s to avoid immediately hitting 429 again)
