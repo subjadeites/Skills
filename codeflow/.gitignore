@@ -23,3 +23,6 @@
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Local release helper (publishing to Clawhub)
+push.sh
