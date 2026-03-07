@@ -18,6 +18,54 @@ def _write_executable(path: str, content: str) -> None:
 
 
 class EnforcerStatusNpxFallbackTests(unittest.TestCase):
+    def test_status_detects_openclaw_via_nvm_when_path_is_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            fake_openclaw_bin = os.path.join(td, "fake-openclaw-bin")
+            fake_home = os.path.join(td, "home")
+            nvm_dir = os.path.join(fake_home, ".nvm")
+            os.makedirs(fake_openclaw_bin, exist_ok=True)
+            os.makedirs(nvm_dir, exist_ok=True)
+
+            _write_executable(
+                os.path.join(fake_openclaw_bin, "openclaw"),
+                """#!/bin/sh
+set -eu
+case "${1:-}" in
+  --version)
+    printf '%s\n' 'openclaw 1.2.3'
+    exit 0
+    ;;
+  plugins)
+    if [ "${2:-}" = "list" ] && [ "${3:-}" = "--json" ]; then
+      printf '%s\n' '[{"id":"codeflow-enforcer","enabled":true,"status":"loaded","hookCount":2}]'
+      exit 0
+    fi
+    ;;
+esac
+exit 0
+""",
+            )
+            with open(os.path.join(nvm_dir, "nvm.sh"), "w", encoding="utf-8") as f:
+                f.write(f'export PATH="{fake_openclaw_bin}:$PATH"\n')
+
+            env = dict(os.environ)
+            env["HOME"] = fake_home
+            env["PATH"] = "/usr/bin:/bin"
+
+            proc = subprocess.run(
+                ["/bin/bash", ENFORCER, "status", "--json"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            payload = json.loads(proc.stdout)
+            self.assertTrue(payload["openclawCli"])
+            self.assertEqual(payload["openclawLauncherKind"], "native")
+            self.assertTrue(payload["pluginDetected"])
+            self.assertEqual(payload["recommendation"]["action"], "none")
+
     def test_status_exposes_install_button_when_only_npx_is_available(self):
         with tempfile.TemporaryDirectory() as td:
             fake_bin = os.path.join(td, "bin")

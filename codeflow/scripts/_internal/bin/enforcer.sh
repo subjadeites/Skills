@@ -12,11 +12,23 @@ INSTALL_CALLBACK_DATA="cfe:install"
 OPENCLAW_LAUNCHER_KIND=""
 OPENCLAW_LAUNCHER_LABEL=""
 OPENCLAW_CMD=()
+OPENCLAW_NVM_SCRIPT=""
 
 detect_openclaw_launcher() {
   if [ -n "$OPENCLAW_LAUNCHER_KIND" ]; then
     [ "$OPENCLAW_LAUNCHER_KIND" != "missing" ]
     return
+  fi
+
+  if [ -n "${HOME:-}" ]; then
+    local nvm_script="$HOME/.nvm/nvm.sh"
+    if [ -f "$nvm_script" ] && bash -lc 'source "$1" >/dev/null 2>&1 && command -v openclaw >/dev/null 2>&1' _ "$nvm_script" >/dev/null 2>&1; then
+      OPENCLAW_LAUNCHER_KIND="native"
+      OPENCLAW_LAUNCHER_LABEL="openclaw"
+      OPENCLAW_CMD=()
+      OPENCLAW_NVM_SCRIPT="$nvm_script"
+      return 0
+    fi
   fi
 
   if command -v openclaw >/dev/null 2>&1; then
@@ -44,6 +56,10 @@ run_openclaw() {
     echo "Error: openclaw CLI not found in PATH, and no npx fallback is available" >&2
     return 127
   }
+  if [ -n "$OPENCLAW_NVM_SCRIPT" ]; then
+    bash -lc 'set -e; source "$1" >/dev/null 2>&1; shift; openclaw "$@"' _ "$OPENCLAW_NVM_SCRIPT" "$@"
+    return
+  fi
   "${OPENCLAW_CMD[@]}" "$@"
 }
 
