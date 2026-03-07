@@ -24,7 +24,7 @@ For hard thread-scoped enforcement (skill-owned `/codeflow` + plugin tool blocki
 bash {baseDir}/scripts/codeflow enforcer install --restart
 ```
 
-If the plugin is missing, `/codeflow` still works in soft mode. The skill should then warn that hard enforcement is unavailable and offer an install button when the channel supports buttons.
+If the plugin is missing, `/codeflow` still works in soft mode. The button/no-button behavior must be owned by the deterministic router script, not by free-form assistant prose.
 
 ## Developer Checks (optional)
 
@@ -49,37 +49,29 @@ Soft fallback contract:
 
 - `/codeflow` is always owned by the skill. That is the public entrypoint and the soft fallback path.
 - The bundled enforcer plugin is optional. When installed, it adds hard `before_prompt_build` / `before_tool_call` blocking on top of the skill flow; it does **not** own `/codeflow`.
-- Interpret the first argument as follows:
-  - `/codeflow` or `/codeflow on|enable|activate`: activate the guard for the current chat/topic, then route coding/dev/review work through Codeflow as before.
-  - `/codeflow status`: do **not** activate anything. Query and summarize the current guard binding for this chat/topic.
-  - `/codeflow off|disable|deactivate`: deactivate the guard for the current chat/topic and confirm the mode is off.
-- Immediately query host readiness:
+- Step 0) Get the current `sessionKey` for the active OpenClaw conversation.
+- Step 1) Always run the deterministic control script:
 
 ```bash
-bash {baseDir}/scripts/codeflow enforcer status --json
+bash {baseDir}/scripts/codeflow control \
+  --session-key "<sessionKey>" \
+  --text "<raw user message text>"
 ```
 
-- Read the returned JSON `recommendation` object:
-  - Always append `recommendation.message` to the `/codeflow` reply.
-  - If `recommendation.buttons` is non-empty and the current channel supports buttons, include those buttons in the same reply.
-  - If buttons are not supported, append `installCommand` or `restartCommand` as plain text instead.
-- Internal callback token: if inbound user text is `callback_data: cfe:install` (or raw `cfe:install`), run:
-
-```bash
-bash {baseDir}/scripts/codeflow enforcer install --restart
-```
-
-Then report the installer result. Be explicit that gateway restart may interrupt the current conversation/thread.
-
-For `/codeflow` activation, immediately run a guard activation command (same chat/topic context):
-
-```bash
-# Telegram example (preferred in Telegram topics):
-exec command:"{baseDir}/scripts/codeflow guard activate -P telegram --tg-chat <chat_id> --tg-thread <thread_id_optional>"
-
-# Generic auto mode:
-exec command:"{baseDir}/scripts/codeflow guard activate -P auto"
-```
+- The script owns these cases:
+  - `/codeflow` or `/codeflow on|enable|activate`
+  - `/codeflow status`
+  - `/codeflow off|disable|deactivate`
+  - `callback_data: cfe:install` (or raw `cfe:install`)
+- The script performs the real work itself:
+  - runs `codeflow guard activate|deactivate` when needed
+  - runs `codeflow enforcer status --json --session-key <sessionKey>`
+  - sends the final message itself via Gateway `message.send`
+  - includes `recommendation.buttons` when Telegram routing is available
+  - falls back to plain `Install:` / `Restart:` command text when buttons cannot be sent
+- Normal path: the script already sent the user-facing reply, so end the turn with `NO_REPLY`.
+- Fallback path: if the script exits with code `3` and stdout starts with `NEED_LLM_ROUTE`, parse the JSON payload on the next line (`{message, buttons}`) and send that yourself. If your current channel/tooling cannot attach buttons, keep the plain text exactly as provided.
+- Installer note: when handling `cfe:install`, be explicit that gateway restart may interrupt or reset the current conversation/thread.
 
 Guard enforcement (hard constraint in script):
 - All execution modes that can post/run work (`run`, `resume`, `review`, `parallel`) are guard-protected by default. `review` and `parallel` must precheck the guard before they clone repos, create worktrees, or post start summaries.
@@ -129,6 +121,7 @@ Commands:
 
 - `codeflow run [run-flags] -- <agent command>` — start a relay session
 - `codeflow guard activate|deactivate|status|current [run-flags]` — manage/query the session-scoped guard
+- `codeflow control --session-key <key> --text <raw_text>` — deterministic `/codeflow` soft-mode control router
 - `codeflow resume [run-flags] <relay_dir>` — replay a previous session from `stream.jsonl`
 - `codeflow review [...] <pr_url>` — PR review mode
 - `codeflow parallel [...] <tasks_file>` — parallel tasks mode

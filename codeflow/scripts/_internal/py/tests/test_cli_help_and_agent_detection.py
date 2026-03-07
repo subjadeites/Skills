@@ -17,6 +17,7 @@ class CliHelpAndAgentDetectionTests(unittest.TestCase):
             (["/bin/bash", CODEFLOW, "run", "--help"], "dev-relay.sh [options] -- <command>"),
             (["/bin/bash", CODEFLOW, "review", "--help"], "review-pr.sh [options] <pr_url>"),
             (["/bin/bash", CODEFLOW, "parallel", "--help"], "parallel-tasks.sh [options] <tasks-file>"),
+            (["/bin/bash", CODEFLOW, "control", "--help"], "--session-key"),
             (["/bin/bash", CODEFLOW, "resume", "--help"], "codeflow resume [run-flags] <relay_dir>"),
             (["/bin/bash", CODEFLOW, "enforcer", "--help"], "codeflow enforcer install [--restart]"),
             (["/bin/bash", DEV_RELAY, "--help"], "dev-relay.sh [options] -- <command>"),

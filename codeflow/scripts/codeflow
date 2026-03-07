@@ -19,6 +19,7 @@ Usage:
 Commands:
   run       Run a relay session (dev-relay)
   guard     Guard operations: activate|deactivate|status|current
+  control   Deterministic /codeflow soft-mode control router
   resume    Replay a previous session from its stream.jsonl
   review    PR review mode
   parallel  Parallel tasks mode
@@ -33,6 +34,7 @@ Examples:
   codeflow run -w ~/projects/app -- claude -p --output-format stream-json --verbose < prompt.txt
   codeflow guard activate -P telegram --tg-chat <id> --tg-thread <topic_id_optional>
   codeflow guard current -P auto --session-key <openclaw_session_key>
+  codeflow control --session-key <openclaw_session_key> --text '/codeflow status'
   codeflow resume -P telegram --tg-chat <id> /tmp/dev-relay.XXXXXX
   codeflow review -P discord https://github.com/org/repo/pull/123
   codeflow parallel -P discord tasks.txt
@@ -106,6 +108,12 @@ case "$cmd" in
       current)    require_internal "$BIN_DIR/guard-current.sh"; exec bash "$BIN_DIR/guard-current.sh" "$@" ;;
       *) echo "Error: unknown guard action '$action' (expected activate|deactivate|status|current)" >&2; guard_usage >&2; exit 2 ;;
     esac
+    ;;
+
+  control)
+    shift || true
+    require_internal "$PY_DIR/codeflow_skill_flow.py"
+    exec env PYTHONPATH="$PY_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 "$PY_DIR/codeflow_skill_flow.py" "$@"
     ;;
 
   resume)
