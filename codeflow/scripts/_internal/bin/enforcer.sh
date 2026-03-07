@@ -1,0 +1,320 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$BIN_DIR/../.." && pwd)"
+PLUGIN_DIR="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$ROOT_DIR/../extensions/codeflow-enforcer")"
+PLUGIN_MANIFEST="$PLUGIN_DIR/openclaw.plugin.json"
+PLUGIN_ID="codeflow-enforcer"
+INSTALL_CALLBACK_DATA="cfe:install"
+
+require_openclaw() {
+  if ! command -v openclaw >/dev/null 2>&1; then
+    echo "Error: openclaw CLI not found in PATH" >&2
+    exit 127
+  fi
+}
+
+require_bundled_plugin() {
+  if [ ! -d "$PLUGIN_DIR" ] || [ ! -f "$PLUGIN_MANIFEST" ]; then
+    echo "Error: bundled enforcer plugin not found at $PLUGIN_DIR" >&2
+    exit 2
+  fi
+}
+
+maybe_restart_gateway() {
+  local requested="${1:-false}"
+  if [ "$requested" = true ]; then
+    openclaw gateway restart
+  else
+    echo "Restart required: run 'openclaw gateway restart' to load changes."
+  fi
+}
+
+plugin_list_json() {
+  openclaw plugins list --json 2>/dev/null || openclaw plugins list
+}
+
+current_session_key() {
+  if [ -n "${SESSION_KEY_OVERRIDE:-}" ]; then
+    printf '%s\n' "$SESSION_KEY_OVERRIDE"
+    return
+  fi
+  printf '%s\n' "${OPENCLAW_SESSION_KEY:-${OPENCLAW_SESSION:-}}"
+}
+
+collect_status() {
+  PLUGIN_BUNDLED=false
+  OPENCLAW_CLI=false
+  PLUGIN_DETECTED=false
+  CAN_INSTALL=false
+  SESSION_KEY_RESOLVED="$(current_session_key)"
+  GUARD_ACTIVE=false
+  GUARD_MATCHED=false
+  GUARD_STATE="unavailable"
+  GUARD_BINDING=""
+  GUARD_RAW=""
+  RECOMMEND_ACTION="none"
+  RECOMMEND_MESSAGE=""
+  RECOMMEND_BUTTON_TEXT=""
+  RECOMMEND_CALLBACK_DATA=""
+
+  if [ -d "$PLUGIN_DIR" ] && [ -f "$PLUGIN_MANIFEST" ]; then
+    PLUGIN_BUNDLED=true
+  fi
+
+  if command -v openclaw >/dev/null 2>&1; then
+    OPENCLAW_CLI=true
+  fi
+
+  if [ "$OPENCLAW_CLI" = true ]; then
+    PLUGIN_LIST_RAW="$(plugin_list_json 2>/dev/null || true)"
+    if printf '%s\n' "$PLUGIN_LIST_RAW" | grep -Fqi "$PLUGIN_ID"; then
+      PLUGIN_DETECTED=true
+    fi
+  else
+    PLUGIN_LIST_RAW=""
+  fi
+
+  if [ "$PLUGIN_BUNDLED" = true ] && [ "$OPENCLAW_CLI" = true ]; then
+    CAN_INSTALL=true
+  fi
+
+  if [ -n "$SESSION_KEY_RESOLVED" ]; then
+    GUARD_RAW="$(bash "$ROOT_DIR/codeflow" guard current -P auto --session-key "$SESSION_KEY_RESOLVED" 2>/dev/null || true)"
+    if [ -n "$GUARD_RAW" ]; then
+      GUARD_PARSED="$(printf '%s' "$GUARD_RAW" | python3 -c '
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+
+active = bool(data.get("active"))
+matched = bool(data.get("matched"))
+state = "active" if active else "inactive" if matched else "unbound"
+binding = str(data.get("bindingKey") or "")
+print(("true" if active else "false") + "\t" + ("true" if matched else "false") + "\t" + state + "\t" + binding)
+' 2>/dev/null || true)"
+      if [ -n "$GUARD_PARSED" ]; then
+        GUARD_ACTIVE_RAW="${GUARD_PARSED%%	*}"
+        REST_GUARD="${GUARD_PARSED#*	}"
+        GUARD_MATCHED_RAW="${REST_GUARD%%	*}"
+        REST_GUARD="${REST_GUARD#*	}"
+        GUARD_STATE="${REST_GUARD%%	*}"
+        if [ "$GUARD_STATE" != "$REST_GUARD" ]; then
+          GUARD_BINDING="${REST_GUARD#*	}"
+        fi
+        [ "$GUARD_ACTIVE_RAW" = "true" ] && GUARD_ACTIVE=true
+        [ "$GUARD_MATCHED_RAW" = "true" ] && GUARD_MATCHED=true
+      fi
+    fi
+  fi
+
+  if [ "$PLUGIN_DETECTED" = true ]; then
+    RECOMMEND_ACTION="none"
+    RECOMMEND_MESSAGE="Codeflow soft mode remains active because /codeflow is owned by the skill. The bundled enforcer plugin is installed on this host. If you just installed or updated it, run 'openclaw gateway restart' before relying on hard tool blocking."
+  elif [ "$PLUGIN_BUNDLED" != true ]; then
+    RECOMMEND_ACTION="manual"
+    RECOMMEND_MESSAGE="Codeflow soft mode remains active. This skill install is incomplete because the bundled enforcer plugin directory is missing."
+  elif [ "$OPENCLAW_CLI" != true ]; then
+    RECOMMEND_ACTION="manual"
+    RECOMMEND_MESSAGE="Codeflow soft mode remains active. openclaw CLI is not available on this host, so the bundled enforcer plugin cannot be installed from chat."
+  else
+    RECOMMEND_ACTION="install"
+    RECOMMEND_MESSAGE="Codeflow soft mode remains active. Hard thread-scoped enforcement is unavailable because the bundled codeflow-enforcer plugin is not installed on this host."
+    RECOMMEND_BUTTON_TEXT="Install Enforcer"
+    RECOMMEND_CALLBACK_DATA="$INSTALL_CALLBACK_DATA"
+  fi
+}
+
+emit_status_json() {
+  collect_status
+  export CODEFLOW_ENFORCER_PLUGIN_ID="$PLUGIN_ID"
+  export CODEFLOW_ENFORCER_PLUGIN_DIR="$PLUGIN_DIR"
+  export CODEFLOW_ENFORCER_PLUGIN_MANIFEST="$PLUGIN_MANIFEST"
+  export CODEFLOW_ENFORCER_PLUGIN_BUNDLED="$PLUGIN_BUNDLED"
+  export CODEFLOW_ENFORCER_OPENCLAW_CLI="$OPENCLAW_CLI"
+  export CODEFLOW_ENFORCER_PLUGIN_DETECTED="$PLUGIN_DETECTED"
+  export CODEFLOW_ENFORCER_CAN_INSTALL="$CAN_INSTALL"
+  export CODEFLOW_ENFORCER_SESSION_KEY="$SESSION_KEY_RESOLVED"
+  export CODEFLOW_ENFORCER_GUARD_ACTIVE="$GUARD_ACTIVE"
+  export CODEFLOW_ENFORCER_GUARD_MATCHED="$GUARD_MATCHED"
+  export CODEFLOW_ENFORCER_GUARD_STATE="$GUARD_STATE"
+  export CODEFLOW_ENFORCER_GUARD_BINDING="$GUARD_BINDING"
+  export CODEFLOW_ENFORCER_INSTALL_COMMAND="bash $ROOT_DIR/codeflow enforcer install --restart"
+  export CODEFLOW_ENFORCER_RESTART_COMMAND="openclaw gateway restart"
+  export CODEFLOW_ENFORCER_RECOMMEND_ACTION="$RECOMMEND_ACTION"
+  export CODEFLOW_ENFORCER_RECOMMEND_MESSAGE="$RECOMMEND_MESSAGE"
+  export CODEFLOW_ENFORCER_RECOMMEND_BUTTON_TEXT="$RECOMMEND_BUTTON_TEXT"
+  export CODEFLOW_ENFORCER_RECOMMEND_CALLBACK_DATA="$RECOMMEND_CALLBACK_DATA"
+  python3 - <<'PY'
+import json
+import os
+
+def b(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() == "true"
+
+button_text = os.environ.get("CODEFLOW_ENFORCER_RECOMMEND_BUTTON_TEXT", "").strip()
+callback_data = os.environ.get("CODEFLOW_ENFORCER_RECOMMEND_CALLBACK_DATA", "").strip()
+buttons = [[{"text": button_text, "callback_data": callback_data}]] if button_text and callback_data else []
+
+payload = {
+    "ok": True,
+    "pluginId": os.environ.get("CODEFLOW_ENFORCER_PLUGIN_ID", ""),
+    "pluginDir": os.environ.get("CODEFLOW_ENFORCER_PLUGIN_DIR", ""),
+    "pluginManifest": os.environ.get("CODEFLOW_ENFORCER_PLUGIN_MANIFEST", ""),
+    "pluginBundled": b("CODEFLOW_ENFORCER_PLUGIN_BUNDLED"),
+    "openclawCli": b("CODEFLOW_ENFORCER_OPENCLAW_CLI"),
+    "pluginDetected": b("CODEFLOW_ENFORCER_PLUGIN_DETECTED"),
+    "canInstall": b("CODEFLOW_ENFORCER_CAN_INSTALL"),
+    "sessionKey": os.environ.get("CODEFLOW_ENFORCER_SESSION_KEY", ""),
+    "installCommand": os.environ.get("CODEFLOW_ENFORCER_INSTALL_COMMAND", ""),
+    "restartCommand": os.environ.get("CODEFLOW_ENFORCER_RESTART_COMMAND", ""),
+    "guard": {
+        "active": b("CODEFLOW_ENFORCER_GUARD_ACTIVE"),
+        "matched": b("CODEFLOW_ENFORCER_GUARD_MATCHED"),
+        "state": os.environ.get("CODEFLOW_ENFORCER_GUARD_STATE", ""),
+        "bindingKey": os.environ.get("CODEFLOW_ENFORCER_GUARD_BINDING", ""),
+    },
+    "recommendation": {
+        "action": os.environ.get("CODEFLOW_ENFORCER_RECOMMEND_ACTION", ""),
+        "message": os.environ.get("CODEFLOW_ENFORCER_RECOMMEND_MESSAGE", ""),
+        "buttonText": button_text,
+        "callbackData": callback_data,
+        "buttons": buttons,
+    },
+}
+print(json.dumps(payload, ensure_ascii=False))
+PY
+}
+
+show_status() {
+  collect_status
+  echo "== plugin =="
+  if [ "$OPENCLAW_CLI" = true ]; then
+    if [ -n "$PLUGIN_LIST_RAW" ]; then
+      printf '%s\n' "$PLUGIN_LIST_RAW"
+    else
+      echo "(no plugin list output)"
+    fi
+  else
+    echo "openclaw CLI not found in PATH"
+  fi
+  echo
+  echo "== summary =="
+  echo "skill_bundle: $( [ "$PLUGIN_BUNDLED" = true ] && echo ok || echo missing )"
+  echo "openclaw_cli: $( [ "$OPENCLAW_CLI" = true ] && echo ok || echo missing )"
+  if [ "$PLUGIN_DETECTED" = true ]; then
+    echo "host_plugin: installed"
+  else
+    echo "host_plugin: missing"
+  fi
+  echo
+  echo "== guard =="
+  if [ -n "$SESSION_KEY_RESOLVED" ]; then
+    if [ -n "$GUARD_BINDING" ]; then
+      echo "$GUARD_STATE ($GUARD_BINDING)"
+    else
+      echo "$GUARD_STATE"
+    fi
+  else
+    echo "Set OPENCLAW_SESSION_KEY (or OPENCLAW_SESSION), or pass --session-key, to inspect the current thread binding."
+  fi
+  echo
+  echo "== recommendation =="
+  printf '%s\n' "$RECOMMEND_MESSAGE"
+  if [ "$RECOMMEND_ACTION" = "install" ]; then
+    echo "Install: bash $ROOT_DIR/codeflow enforcer install --restart"
+  elif [ "$RECOMMEND_ACTION" = "restart" ]; then
+    echo "Restart: openclaw gateway restart"
+  fi
+}
+
+ACTION="${1:-}"
+case "$ACTION" in
+  -h|--help|help)
+    ACTION="help"
+    shift || true
+    ;;
+  *)
+    shift || true
+    ;;
+esac
+RESTART=false
+JSON=false
+SESSION_KEY_OVERRIDE=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --restart)
+      RESTART=true
+      shift
+      ;;
+    --json)
+      JSON=true
+      shift
+      ;;
+    --session-key)
+      [ "$#" -lt 2 ] && { echo "Error: --session-key requires a value" >&2; exit 2; }
+      SESSION_KEY_OVERRIDE="$2"
+      shift 2
+      ;;
+    -h|--help|help)
+      ACTION="help"
+      shift
+      ;;
+    *)
+      echo "Error: unknown argument '$1'" >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$ACTION" in
+  install)
+    require_openclaw
+    require_bundled_plugin
+    openclaw plugins install -l "$PLUGIN_DIR"
+    maybe_restart_gateway "$RESTART"
+    ;;
+  update)
+    require_openclaw
+    require_bundled_plugin
+    openclaw plugins uninstall "$PLUGIN_ID" --keep-files >/dev/null 2>&1 || true
+    openclaw plugins install -l "$PLUGIN_DIR"
+    maybe_restart_gateway "$RESTART"
+    ;;
+  uninstall)
+    require_openclaw
+    openclaw plugins uninstall "$PLUGIN_ID" --keep-files
+    maybe_restart_gateway "$RESTART"
+    ;;
+  status)
+    if [ "$JSON" = true ]; then
+      emit_status_json
+    else
+      show_status
+    fi
+    ;;
+  ""|help)
+    cat <<EOF
+Usage:
+  codeflow enforcer install [--restart]
+  codeflow enforcer update [--restart]
+  codeflow enforcer uninstall [--restart]
+  codeflow enforcer status [--json] [--session-key <openclaw_session_key>]
+
+Plugin path:
+  $PLUGIN_DIR
+EOF
+    ;;
+  *)
+    echo "Error: unknown enforcer action '$ACTION'" >&2
+    exit 2
+    ;;
+esac

@@ -18,6 +18,14 @@ Breaking note:
 
 First-time setup: see [references/setup.md](references/setup.md) for webhook creation, unbuffer install, bot token, and smoke test.
 
+For hard thread-scoped enforcement (skill-owned `/codeflow` + plugin tool blocking), install the bundled enforcer plugin once on the host:
+
+```bash
+bash {baseDir}/scripts/codeflow enforcer install --restart
+```
+
+If the plugin is missing, `/codeflow` still works in soft mode. The skill should then warn that hard enforcement is unavailable and offer an install button when the channel supports buttons.
+
 ## Developer Checks (optional)
 
 Run a local sanity check bundle (Python syntax compile + unit tests + `bash -n`):
@@ -35,9 +43,35 @@ When user invokes `/codeflow`, treat it as a **session-scoped declaration**:
 3. If user asks for direct non-code tasks, handle normally; this contract applies to coding, development, and review tasks.
 4. The contract lasts for the current session context. If user resets/new session, require re-invocation.
 
-Acknowledge activation in one short sentence, then execute coding tasks under this contract.
+Acknowledge the command in one short sentence, then execute coding tasks under this contract.
 
-After `/codeflow` activation, immediately run a guard activation command (same chat/topic context):
+Soft fallback contract:
+
+- `/codeflow` is always owned by the skill. That is the public entrypoint and the soft fallback path.
+- The bundled enforcer plugin is optional. When installed, it adds hard `before_prompt_build` / `before_tool_call` blocking on top of the skill flow; it does **not** own `/codeflow`.
+- Interpret the first argument as follows:
+  - `/codeflow` or `/codeflow on|enable|activate`: activate the guard for the current chat/topic, then route coding/dev/review work through Codeflow as before.
+  - `/codeflow status`: do **not** activate anything. Query and summarize the current guard binding for this chat/topic.
+  - `/codeflow off|disable|deactivate`: deactivate the guard for the current chat/topic and confirm the mode is off.
+- Immediately query host readiness:
+
+```bash
+bash {baseDir}/scripts/codeflow enforcer status --json
+```
+
+- Read the returned JSON `recommendation` object:
+  - Always append `recommendation.message` to the `/codeflow` reply.
+  - If `recommendation.buttons` is non-empty and the current channel supports buttons, include those buttons in the same reply.
+  - If buttons are not supported, append `installCommand` or `restartCommand` as plain text instead.
+- Internal callback token: if inbound user text is `callback_data: cfe:install` (or raw `cfe:install`), run:
+
+```bash
+bash {baseDir}/scripts/codeflow enforcer install --restart
+```
+
+Then report the installer result. Be explicit that gateway restart may interrupt the current conversation/thread.
+
+For `/codeflow` activation, immediately run a guard activation command (same chat/topic context):
 
 ```bash
 # Telegram example (preferred in Telegram topics):
@@ -48,8 +82,8 @@ exec command:"{baseDir}/scripts/codeflow guard activate -P auto"
 ```
 
 Guard enforcement (hard constraint in script):
-- All execution modes that can post/run work (`run`, `resume`, `review`, `parallel`) are guard-protected by default because they route through `dev-relay.sh`.
-- Guard management commands (`codeflow guard activate|deactivate|status`) bypass the precheck.
+- All execution modes that can post/run work (`run`, `resume`, `review`, `parallel`) are guard-protected by default. `review` and `parallel` must precheck the guard before they clone repos, create worktrees, or post start summaries.
+- Guard management commands (`codeflow guard activate|deactivate|status|current`) bypass the precheck.
 - Guard is bound to chat/topic context (and session key when available).
 - Every allow/deny decision is appended to `${XDG_STATE_HOME:-$HOME/.local/state}/codeflow/guard-audit.jsonl` (stores `commandHint` only — redacted + truncated; never the full command).
 - If blocked, instruct user to re-run `/codeflow` in the same chat/topic.
@@ -94,11 +128,12 @@ bash {baseDir}/scripts/codeflow <command> [...]
 Commands:
 
 - `codeflow run [run-flags] -- <agent command>` — start a relay session
-- `codeflow guard activate|deactivate|status [run-flags]` — manage the session-scoped guard
+- `codeflow guard activate|deactivate|status|current [run-flags]` — manage/query the session-scoped guard
 - `codeflow resume [run-flags] <relay_dir>` — replay a previous session from `stream.jsonl`
 - `codeflow review [...] <pr_url>` — PR review mode
 - `codeflow parallel [...] <tasks_file>` — parallel tasks mode
 - `codeflow bridge [...]` — Discord gateway bridge
+- `codeflow enforcer install|update|uninstall|status [--json]` — manage/query the bundled OpenClaw enforcer plugin
 - `codeflow check` — local checks (syntax + unit tests)
 - `codeflow smoke` — config/prereq smoke test
 
@@ -111,7 +146,6 @@ See `bash {baseDir}/scripts/codeflow --help` for the canonical CLI.
 | `-w <dir>` | Working directory | Current dir |
 | `-t <sec>` | Timeout | 1800 |
 | `-h <sec>` | Hang threshold | 120 |
-| `-i <sec>` | Post interval (raw mode only) | 10 |
 | `-n <name>` | Agent display name | Auto-detected |
 | `-P <platform>` | `discord`, `telegram`, `auto` (inferred) | discord |
 | `--thread` | Post into a Discord thread | Off |

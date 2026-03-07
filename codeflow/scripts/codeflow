@@ -18,11 +18,12 @@ Usage:
 
 Commands:
   run       Run a relay session (dev-relay)
-  guard     Guard operations: activate|deactivate|status
+  guard     Guard operations: activate|deactivate|status|current
   resume    Replay a previous session from its stream.jsonl
   review    PR review mode
   parallel  Parallel tasks mode
   bridge    Discord gateway bridge (optional)
+  enforcer  Install/update/uninstall/status [--json] for the Codeflow enforcer plugin
   check     Developer checks (syntax + unit tests)
   smoke     Prereq/config smoke test
 
@@ -31,9 +32,12 @@ Examples:
   codeflow run -w ~/projects/app -- codex exec --json --full-auto - < prompt.txt
   codeflow run -w ~/projects/app -- claude -p --output-format stream-json --verbose < prompt.txt
   codeflow guard activate -P telegram --tg-chat <id> --tg-thread <topic_id_optional>
+  codeflow guard current -P auto --session-key <openclaw_session_key>
   codeflow resume -P telegram --tg-chat <id> /tmp/dev-relay.XXXXXX
   codeflow review -P discord https://github.com/org/repo/pull/123
   codeflow parallel -P discord tasks.txt
+  codeflow enforcer install --restart
+  codeflow enforcer status --json
 EOF
 }
 
@@ -46,6 +50,30 @@ require_internal() {
   fi
 }
 
+is_help_arg() {
+  case "${1:-}" in
+    -h|--help|help) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+guard_usage() {
+  cat <<'EOF'
+Usage:
+  codeflow guard activate [run-flags]
+  codeflow guard deactivate [run-flags]
+  codeflow guard status [run-flags]
+  codeflow guard current [--session-key <key>] [-P <platform|auto>]
+EOF
+}
+
+resume_usage() {
+  cat <<'EOF'
+Usage:
+  codeflow resume [run-flags] <relay_dir>
+EOF
+}
+
 cmd="${1:-}"
 case "$cmd" in
   ""|-h|--help|help)
@@ -56,6 +84,9 @@ case "$cmd" in
   run)
     shift
     require_internal "$BIN_DIR/dev-relay.sh"
+    if is_help_arg "${1:-}"; then
+      exec bash "$BIN_DIR/dev-relay.sh" --help
+    fi
     exec bash "$BIN_DIR/dev-relay.sh" "$@"
     ;;
 
@@ -64,19 +95,32 @@ case "$cmd" in
     action="${1:-}"
     shift || true
     require_internal "$BIN_DIR/dev-relay.sh"
+    if [ -z "$action" ] || is_help_arg "$action"; then
+      guard_usage
+      exit 0
+    fi
     case "$action" in
       activate)   exec bash "$BIN_DIR/dev-relay.sh" --activate "$@" ;;
       deactivate) exec bash "$BIN_DIR/dev-relay.sh" --deactivate "$@" ;;
       status)     exec bash "$BIN_DIR/dev-relay.sh" --guard-status "$@" ;;
-      *) echo "Error: unknown guard action '$action' (expected activate|deactivate|status)" >&2; exit 2 ;;
+      current)    require_internal "$BIN_DIR/guard-current.sh"; exec bash "$BIN_DIR/guard-current.sh" "$@" ;;
+      *) echo "Error: unknown guard action '$action' (expected activate|deactivate|status|current)" >&2; guard_usage >&2; exit 2 ;;
     esac
     ;;
 
   resume)
     shift || true
     require_internal "$BIN_DIR/dev-relay.sh"
+    if [ "$#" -eq 0 ]; then
+      echo "Error: resume requires a relay directory" >&2
+      resume_usage >&2
+      exit 2
+    fi
+    if is_help_arg "${1:-}"; then
+      resume_usage
+      exit 0
+    fi
     # Contract: relay dir must be the last argument; any flags must come before it.
-    [ "$#" -lt 1 ] && { echo "Error: resume requires a relay directory" >&2; exit 2; }
     args=("$@")
     resume_dir="${args[$((${#args[@]} - 1))]}"
     unset 'args[$((${#args[@]} - 1))]'
@@ -86,12 +130,18 @@ case "$cmd" in
   review)
     shift
     require_internal "$BIN_DIR/review-pr.sh"
+    if is_help_arg "${1:-}"; then
+      exec bash "$BIN_DIR/review-pr.sh" --help
+    fi
     exec bash "$BIN_DIR/review-pr.sh" "$@"
     ;;
 
   parallel)
     shift
     require_internal "$BIN_DIR/parallel-tasks.sh"
+    if is_help_arg "${1:-}"; then
+      exec bash "$BIN_DIR/parallel-tasks.sh" --help
+    fi
     exec bash "$BIN_DIR/parallel-tasks.sh" "$@"
     ;;
 
@@ -99,6 +149,15 @@ case "$cmd" in
     shift
     require_internal "$PY_DIR/discord-bridge.py"
     exec env PYTHONPATH="$PY_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 "$PY_DIR/discord-bridge.py" "$@"
+    ;;
+
+  enforcer)
+    shift || true
+    require_internal "$BIN_DIR/enforcer.sh"
+    if [ "$#" -eq 0 ] || is_help_arg "${1:-}"; then
+      exec bash "$BIN_DIR/enforcer.sh" --help
+    fi
+    exec bash "$BIN_DIR/enforcer.sh" "$@"
     ;;
 
   check)
