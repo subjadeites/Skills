@@ -36,20 +36,26 @@ bash {baseDir}/scripts/codeflow check
 
 ## `/codeflow` command contract (session-scoped)
 
-When user invokes `/codeflow`, treat it as a **session-scoped declaration**:
+When user invokes `/codeflow`, treat it as a **control command first**, then as a session-scoped declaration:
 
 1. For the **current OpenClaw session**, all coding, development, or review tasks (code/architecture/security/product review) — including any direct Codex or Claude Code invocations — must be executed via **Codeflow relay + local Codex/Claude Code** (not direct edits unless explicitly requested).
 2. Follow Codeflow output conventions (including compact Telegram behavior when applicable).
 3. If user asks for direct non-code tasks, handle normally; this contract applies to coding, development, and review tasks.
 4. The contract lasts for the current session context. If user resets/new session, require re-invocation.
 
-Acknowledge the command in one short sentence, then execute coding tasks under this contract.
+Important command-order rule:
+- A bare control message such as `/codeflow`, `/codeflow on`, `/codeflow status`, `/codeflow off`, or `callback_data: cfe:install` is **not** a request for a coding task.
+- For these control messages, do **not** send a generic acknowledgement like “ready, what should I do next?”.
+- First execute the deterministic control router below.
+- If the router succeeds, end with `NO_REPLY` because the router already sent the user-facing control reply.
+- Only after that should later coding tasks in the same session be executed under the Codeflow contract.
+- If the same inbound message includes both the `/codeflow` command and an actual coding task, run the control router first, then continue with the remaining task text.
 
 Soft fallback contract:
 
 - `/codeflow` is always owned by the skill. That is the public entrypoint and the soft fallback path.
 - The bundled enforcer plugin is optional. When installed, it adds hard `before_prompt_build` / `before_tool_call` blocking on top of the skill flow; it does **not** own `/codeflow`.
-- Step 0) Get the current `sessionKey` for the active OpenClaw conversation.
+- Step 0) Call `session_status` and read the current `sessionKey` for the active OpenClaw conversation.
 - Step 1) Always run the deterministic control script:
 
 ```bash
@@ -63,6 +69,7 @@ bash {baseDir}/scripts/codeflow control \
   - `/codeflow status`
   - `/codeflow off|disable|deactivate`
   - `callback_data: cfe:install` (or raw `cfe:install`)
+- For a bare `/codeflow` message, always route it here first. Do not improvise a textual reply.
 - The script performs the real work itself:
   - runs `codeflow guard activate|deactivate` when needed
   - runs `codeflow enforcer status --json --session-key <sessionKey>`
