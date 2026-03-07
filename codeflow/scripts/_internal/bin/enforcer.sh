@@ -74,6 +74,50 @@ plugin_list_json() {
   run_openclaw plugins list --json 2>/dev/null || run_openclaw plugins list
 }
 
+ensure_plugin_allowlisted() {
+  local raw merged changed
+  raw="$(run_openclaw config get plugins.allow 2>/dev/null || true)"
+  merged="$(PLUGIN_ALLOW_RAW="$raw" python3 - "$PLUGIN_ID" <<'PY'
+import json
+import os
+import sys
+
+plugin_id = sys.argv[1]
+raw = os.environ.get("PLUGIN_ALLOW_RAW", "").strip()
+items = []
+
+if raw and raw not in {"null", "undefined"}:
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        raise SystemExit("Error: plugins.allow must be a JSON array or unset")
+
+    if parsed is None:
+        parsed = []
+
+    if not isinstance(parsed, list):
+        raise SystemExit("Error: plugins.allow must be a JSON array")
+
+    for item in parsed:
+        text = str(item).strip()
+        if text and text not in items:
+            items.append(text)
+
+changed = plugin_id not in items
+if changed:
+    items.append(plugin_id)
+
+print(("true" if changed else "false") + "\t" + json.dumps(items, ensure_ascii=False))
+PY
+)"
+  changed="${merged%%	*}"
+  merged="${merged#*	}"
+
+  if [ "$changed" = true ]; then
+    run_openclaw config set plugins.allow "$merged" --json >/dev/null
+  fi
+}
+
 current_session_key() {
   if [ -n "${SESSION_KEY_OVERRIDE:-}" ]; then
     printf '%s\n' "$SESSION_KEY_OVERRIDE"
@@ -329,12 +373,14 @@ case "$ACTION" in
   install)
     require_openclaw
     require_bundled_plugin
+    ensure_plugin_allowlisted
     run_openclaw plugins install -l "$PLUGIN_DIR"
     maybe_restart_gateway "$RESTART"
     ;;
   update)
     require_openclaw
     require_bundled_plugin
+    ensure_plugin_allowlisted
     run_openclaw plugins uninstall "$PLUGIN_ID" --keep-files >/dev/null 2>&1 || true
     run_openclaw plugins install -l "$PLUGIN_DIR"
     maybe_restart_gateway "$RESTART"
