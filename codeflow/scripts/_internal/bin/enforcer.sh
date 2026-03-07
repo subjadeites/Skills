@@ -9,10 +9,47 @@ PLUGIN_DIR="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$
 PLUGIN_MANIFEST="$PLUGIN_DIR/openclaw.plugin.json"
 PLUGIN_ID="codeflow-enforcer"
 INSTALL_CALLBACK_DATA="cfe:install"
+OPENCLAW_LAUNCHER_KIND=""
+OPENCLAW_LAUNCHER_LABEL=""
+OPENCLAW_CMD=()
+
+detect_openclaw_launcher() {
+  if [ -n "$OPENCLAW_LAUNCHER_KIND" ]; then
+    [ "$OPENCLAW_LAUNCHER_KIND" != "missing" ]
+    return
+  fi
+
+  if command -v openclaw >/dev/null 2>&1; then
+    OPENCLAW_LAUNCHER_KIND="native"
+    OPENCLAW_LAUNCHER_LABEL="openclaw"
+    OPENCLAW_CMD=(openclaw)
+    return 0
+  fi
+
+  if command -v npx >/dev/null 2>&1; then
+    OPENCLAW_LAUNCHER_KIND="npx"
+    OPENCLAW_LAUNCHER_LABEL="npx -y openclaw"
+    OPENCLAW_CMD=(npx -y openclaw)
+    return 0
+  fi
+
+  OPENCLAW_LAUNCHER_KIND="missing"
+  OPENCLAW_LAUNCHER_LABEL=""
+  OPENCLAW_CMD=()
+  return 1
+}
+
+run_openclaw() {
+  detect_openclaw_launcher || {
+    echo "Error: openclaw CLI not found in PATH, and no npx fallback is available" >&2
+    return 127
+  }
+  "${OPENCLAW_CMD[@]}" "$@"
+}
 
 require_openclaw() {
-  if ! command -v openclaw >/dev/null 2>&1; then
-    echo "Error: openclaw CLI not found in PATH" >&2
+  if ! detect_openclaw_launcher; then
+    echo "Error: openclaw CLI not found in PATH, and no npx fallback is available" >&2
     exit 127
   fi
 }
@@ -27,14 +64,14 @@ require_bundled_plugin() {
 maybe_restart_gateway() {
   local requested="${1:-false}"
   if [ "$requested" = true ]; then
-    openclaw gateway restart
+    run_openclaw gateway restart
   else
-    echo "Restart required: run 'openclaw gateway restart' to load changes."
+    echo "Restart required: run '${OPENCLAW_LAUNCHER_LABEL:-openclaw} gateway restart' to load changes."
   fi
 }
 
 plugin_list_json() {
-  openclaw plugins list --json 2>/dev/null || openclaw plugins list
+  run_openclaw plugins list --json 2>/dev/null || run_openclaw plugins list
 }
 
 current_session_key() {
@@ -65,11 +102,11 @@ collect_status() {
     PLUGIN_BUNDLED=true
   fi
 
-  if command -v openclaw >/dev/null 2>&1; then
+  if detect_openclaw_launcher; then
     OPENCLAW_CLI=true
   fi
 
-  if [ "$OPENCLAW_CLI" = true ]; then
+  if [ "$OPENCLAW_CLI" = true ] && [ "$OPENCLAW_LAUNCHER_KIND" = "native" ]; then
     PLUGIN_LIST_RAW="$(plugin_list_json 2>/dev/null || true)"
     if printf '%s\n' "$PLUGIN_LIST_RAW" | grep -Fqi "$PLUGIN_ID"; then
       PLUGIN_DETECTED=true
@@ -118,6 +155,11 @@ print(("true" if active else "false") + "\t" + ("true" if matched else "false") 
   if [ "$PLUGIN_DETECTED" = true ]; then
     RECOMMEND_ACTION="none"
     RECOMMEND_MESSAGE="Codeflow soft mode remains active because /codeflow is owned by the skill. The bundled enforcer plugin is installed on this host. If you just installed or updated it, run 'openclaw gateway restart' before relying on hard tool blocking."
+  elif [ "$OPENCLAW_CLI" = true ] && [ "$OPENCLAW_LAUNCHER_KIND" = "npx" ]; then
+    RECOMMEND_ACTION="install"
+    RECOMMEND_MESSAGE="Codeflow soft mode remains active. A global openclaw binary is not on PATH, but npx can run the bundled installer, so hard enforcement can still be installed from chat."
+    RECOMMEND_BUTTON_TEXT="Install Enforcer"
+    RECOMMEND_CALLBACK_DATA="$INSTALL_CALLBACK_DATA"
   elif [ "$PLUGIN_BUNDLED" != true ]; then
     RECOMMEND_ACTION="manual"
     RECOMMEND_MESSAGE="Codeflow soft mode remains active. This skill install is incomplete because the bundled enforcer plugin directory is missing."
@@ -139,6 +181,8 @@ emit_status_json() {
   export CODEFLOW_ENFORCER_PLUGIN_MANIFEST="$PLUGIN_MANIFEST"
   export CODEFLOW_ENFORCER_PLUGIN_BUNDLED="$PLUGIN_BUNDLED"
   export CODEFLOW_ENFORCER_OPENCLAW_CLI="$OPENCLAW_CLI"
+  export CODEFLOW_ENFORCER_OPENCLAW_LAUNCHER="$OPENCLAW_LAUNCHER_LABEL"
+  export CODEFLOW_ENFORCER_OPENCLAW_LAUNCHER_KIND="$OPENCLAW_LAUNCHER_KIND"
   export CODEFLOW_ENFORCER_PLUGIN_DETECTED="$PLUGIN_DETECTED"
   export CODEFLOW_ENFORCER_CAN_INSTALL="$CAN_INSTALL"
   export CODEFLOW_ENFORCER_SESSION_KEY="$SESSION_KEY_RESOLVED"
@@ -147,7 +191,7 @@ emit_status_json() {
   export CODEFLOW_ENFORCER_GUARD_STATE="$GUARD_STATE"
   export CODEFLOW_ENFORCER_GUARD_BINDING="$GUARD_BINDING"
   export CODEFLOW_ENFORCER_INSTALL_COMMAND="bash $ROOT_DIR/codeflow enforcer install --restart"
-  export CODEFLOW_ENFORCER_RESTART_COMMAND="openclaw gateway restart"
+  export CODEFLOW_ENFORCER_RESTART_COMMAND="${OPENCLAW_LAUNCHER_LABEL:-openclaw} gateway restart"
   export CODEFLOW_ENFORCER_RECOMMEND_ACTION="$RECOMMEND_ACTION"
   export CODEFLOW_ENFORCER_RECOMMEND_MESSAGE="$RECOMMEND_MESSAGE"
   export CODEFLOW_ENFORCER_RECOMMEND_BUTTON_TEXT="$RECOMMEND_BUTTON_TEXT"
@@ -170,6 +214,8 @@ payload = {
     "pluginManifest": os.environ.get("CODEFLOW_ENFORCER_PLUGIN_MANIFEST", ""),
     "pluginBundled": b("CODEFLOW_ENFORCER_PLUGIN_BUNDLED"),
     "openclawCli": b("CODEFLOW_ENFORCER_OPENCLAW_CLI"),
+    "openclawLauncher": os.environ.get("CODEFLOW_ENFORCER_OPENCLAW_LAUNCHER", ""),
+    "openclawLauncherKind": os.environ.get("CODEFLOW_ENFORCER_OPENCLAW_LAUNCHER_KIND", ""),
     "pluginDetected": b("CODEFLOW_ENFORCER_PLUGIN_DETECTED"),
     "canInstall": b("CODEFLOW_ENFORCER_CAN_INSTALL"),
     "sessionKey": os.environ.get("CODEFLOW_ENFORCER_SESSION_KEY", ""),
@@ -208,7 +254,11 @@ show_status() {
   echo
   echo "== summary =="
   echo "skill_bundle: $( [ "$PLUGIN_BUNDLED" = true ] && echo ok || echo missing )"
-  echo "openclaw_cli: $( [ "$OPENCLAW_CLI" = true ] && echo ok || echo missing )"
+  if [ "$OPENCLAW_CLI" = true ]; then
+    echo "openclaw_cli: ok (${OPENCLAW_LAUNCHER_LABEL})"
+  else
+    echo "openclaw_cli: missing"
+  fi
   if [ "$PLUGIN_DETECTED" = true ]; then
     echo "host_plugin: installed"
   else
@@ -279,19 +329,19 @@ case "$ACTION" in
   install)
     require_openclaw
     require_bundled_plugin
-    openclaw plugins install -l "$PLUGIN_DIR"
+    run_openclaw plugins install -l "$PLUGIN_DIR"
     maybe_restart_gateway "$RESTART"
     ;;
   update)
     require_openclaw
     require_bundled_plugin
-    openclaw plugins uninstall "$PLUGIN_ID" --keep-files >/dev/null 2>&1 || true
-    openclaw plugins install -l "$PLUGIN_DIR"
+    run_openclaw plugins uninstall "$PLUGIN_ID" --keep-files >/dev/null 2>&1 || true
+    run_openclaw plugins install -l "$PLUGIN_DIR"
     maybe_restart_gateway "$RESTART"
     ;;
   uninstall)
     require_openclaw
-    openclaw plugins uninstall "$PLUGIN_ID" --keep-files
+    run_openclaw plugins uninstall "$PLUGIN_ID" --keep-files
     maybe_restart_gateway "$RESTART"
     ;;
   status)
