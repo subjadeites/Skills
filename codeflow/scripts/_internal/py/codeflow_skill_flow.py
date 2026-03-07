@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from openclaw_gateway import infer_message_route, send_message
+from openclaw_gateway import edit_message, extract_message_id, infer_message_route, send_message
 
 
 class NeedLlmRoute(RuntimeError):
@@ -60,6 +60,13 @@ def require_send_message(session_key: str, text: str, buttons: Optional[List[Lis
     return resp
 
 
+def require_edit_message(session_key: str, message_id: str, text: str, buttons: Optional[List[List[Dict[str, str]]]] = None) -> Dict[str, Any]:
+    resp = edit_message(session_key, message_id, text, buttons=buttons)
+    if not isinstance(resp, dict) or resp.get("ok") is False:
+        raise NeedLlmRoute(f"tools_invoke failed: {resp}")
+    return resp
+
+
 def strip_callback_prefix(text: str) -> str:
     value = (text or "").strip()
     if value.lower().startswith("callback_data:"):
@@ -67,12 +74,14 @@ def strip_callback_prefix(text: str) -> str:
     return value
 
 
-def parse_control_action(raw_text: str) -> str:
+def parse_control_request(raw_text: str) -> Dict[str, str]:
     text = strip_callback_prefix(raw_text)
     lower = text.lower()
 
-    if lower == "cfe:install":
-        return "install"
+    if lower.startswith("cfe:install"):
+        parts = text.split(":", 2)
+        message_id = parts[2].strip() if len(parts) >= 3 else ""
+        return {"action": "install", "message_id": message_id}
 
     if text.startswith("/codeflow"):
         text = text[len("/codeflow") :].strip()
@@ -81,18 +90,18 @@ def parse_control_action(raw_text: str) -> str:
     elif lower == "codeflow":
         text = ""
     else:
-        return "unsupported"
+        return {"action": "unsupported", "message_id": ""}
 
     parts = text.split()
     root = parts[0].lower() if parts else ""
 
     if root in {"", "on", "enable", "activate"}:
-        return "activate"
+        return {"action": "activate", "message_id": ""}
     if root == "status":
-        return "status"
+        return {"action": "status", "message_id": ""}
     if root in {"off", "disable", "deactivate"}:
-        return "deactivate"
-    return "unsupported"
+        return {"action": "deactivate", "message_id": ""}
+    return {"action": "unsupported", "message_id": ""}
 
 
 def run_codeflow(argv: List[str], session_key: str = "") -> subprocess.CompletedProcess[str]:
@@ -227,6 +236,23 @@ def build_install_notice() -> Dict[str, Any]:
     }
 
 
+def attach_install_message_id(buttons: List[List[Dict[str, str]]], message_id: str) -> List[List[Dict[str, str]]]:
+    if not message_id:
+        return buttons
+
+    out: List[List[Dict[str, str]]] = []
+    for row in buttons:
+        new_row: List[Dict[str, str]] = []
+        for btn in row:
+            new_btn = dict(btn)
+            callback_data = str(new_btn.get("callback_data") or "").strip()
+            if callback_data == "cfe:install":
+                new_btn["callback_data"] = f"cfe:install:{message_id}"
+            new_row.append(new_btn)
+        out.append(new_row)
+    return out
+
+
 def emit_need_llm_route(payload: Dict[str, Any]) -> int:
     print("NEED_LLM_ROUTE", file=sys.stdout)
     print(json.dumps(payload, ensure_ascii=False), file=sys.stdout)
@@ -240,7 +266,9 @@ def main() -> int:
     args = ap.parse_args()
 
     session_key = args.session_key.strip()
-    action = parse_control_action(args.text)
+    request = parse_control_request(args.text)
+    action = request["action"]
+    callback_message_id = request.get("message_id", "").strip()
 
     if action == "unsupported":
         print(json.dumps({"ok": False, "error": "UNSUPPORTED"}, ensure_ascii=False))
@@ -253,7 +281,9 @@ def main() -> int:
         if action == "install":
             notice = build_install_notice()
             fallback_payload = notice
-            if buttons_supported:
+            if buttons_supported and callback_message_id:
+                require_edit_message(session_key, callback_message_id, notice["message"], buttons=[])
+            elif buttons_supported:
                 require_send_message(session_key, notice["message"], buttons=None)
 
             proc = run_codeflow(["enforcer", "install", "--restart"], session_key=session_key)
@@ -272,7 +302,16 @@ def main() -> int:
         fallback_payload = reply
 
         if buttons_supported:
-            require_send_message(session_key, reply["message"], buttons=reply["buttons"] or None)
+            if reply["buttons"]:
+                resp = require_send_message(session_key, reply["message"], buttons=None)
+                mid = extract_message_id(resp) or ""
+                buttons = attach_install_message_id(reply["buttons"], mid)
+                if mid and buttons:
+                    require_edit_message(session_key, mid, reply["message"], buttons=buttons)
+                elif buttons:
+                    require_send_message(session_key, reply["message"], buttons=buttons)
+            else:
+                require_send_message(session_key, reply["message"], buttons=None)
             return 0
 
         return emit_need_llm_route(reply)
@@ -283,7 +322,10 @@ def main() -> int:
         message = f"Codeflow request failed.\n\n{str(e).strip() or type(e).__name__}"
         if buttons_supported:
             try:
-                require_send_message(session_key, message, buttons=None)
+                if callback_message_id:
+                    require_edit_message(session_key, callback_message_id, message, buttons=[])
+                else:
+                    require_send_message(session_key, message, buttons=None)
                 return 1
             except NeedLlmRoute:
                 pass

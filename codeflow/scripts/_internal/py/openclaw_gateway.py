@@ -122,3 +122,43 @@ def send_message(
 
     payload = {"tool": "message", "action": "send", "args": args, "sessionKey": session_key}
     return tools_invoke(payload)
+
+
+def edit_message(
+    session_key: str,
+    message_id: str,
+    text: str,
+    buttons: Optional[List[List[Dict[str, str]]]] = None,
+) -> Dict[str, Any]:
+    route = infer_message_route(session_key)
+    if not route:
+        return {"ok": False, "error": {"type": "route", "message": f"cannot infer target from sessionKey: {session_key}"}}
+
+    args: Dict[str, Any] = {**route, "messageId": str(message_id), "message": text}
+    if buttons is not None:
+        args["buttons"] = buttons
+
+    payload = {"tool": "message", "action": "edit", "args": args, "sessionKey": session_key}
+    return tools_invoke(payload)
+
+
+def extract_message_id(resp: Dict[str, Any]) -> Optional[str]:
+    def scan(obj: Any) -> Optional[str]:
+        if isinstance(obj, dict):
+            for key in ("messageId", "message_id", "id"):
+                value = obj.get(key)
+                if isinstance(value, (str, int)) and str(value):
+                    return str(value)
+            for key in ("details", "result", "data", "output"):
+                if key in obj:
+                    found = scan(obj.get(key))
+                    if found:
+                        return found
+        elif isinstance(obj, list):
+            for item in obj:
+                found = scan(item)
+                if found:
+                    return found
+        return None
+
+    return scan(resp)

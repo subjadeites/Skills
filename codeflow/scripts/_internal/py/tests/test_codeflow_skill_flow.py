@@ -10,13 +10,35 @@ import codeflow_skill_flow
 
 
 class CodeflowSkillFlowTests(unittest.TestCase):
-    def test_parse_control_action(self):
-        self.assertEqual(codeflow_skill_flow.parse_control_action("/codeflow"), "activate")
-        self.assertEqual(codeflow_skill_flow.parse_control_action("/codeflow on"), "activate")
-        self.assertEqual(codeflow_skill_flow.parse_control_action("/codeflow status"), "status")
-        self.assertEqual(codeflow_skill_flow.parse_control_action("/codeflow off"), "deactivate")
-        self.assertEqual(codeflow_skill_flow.parse_control_action("callback_data: cfe:install"), "install")
-        self.assertEqual(codeflow_skill_flow.parse_control_action("/other"), "unsupported")
+    def test_parse_control_request(self):
+        self.assertEqual(
+            codeflow_skill_flow.parse_control_request("/codeflow"),
+            {"action": "activate", "message_id": ""},
+        )
+        self.assertEqual(
+            codeflow_skill_flow.parse_control_request("/codeflow on"),
+            {"action": "activate", "message_id": ""},
+        )
+        self.assertEqual(
+            codeflow_skill_flow.parse_control_request("/codeflow status"),
+            {"action": "status", "message_id": ""},
+        )
+        self.assertEqual(
+            codeflow_skill_flow.parse_control_request("/codeflow off"),
+            {"action": "deactivate", "message_id": ""},
+        )
+        self.assertEqual(
+            codeflow_skill_flow.parse_control_request("callback_data: cfe:install"),
+            {"action": "install", "message_id": ""},
+        )
+        self.assertEqual(
+            codeflow_skill_flow.parse_control_request("callback_data: cfe:install:12345"),
+            {"action": "install", "message_id": "12345"},
+        )
+        self.assertEqual(
+            codeflow_skill_flow.parse_control_request("/other"),
+            {"action": "unsupported", "message_id": ""},
+        )
 
     def test_infer_message_route_for_telegram(self):
         direct = codeflow_skill_flow.infer_message_route("agent:main:telegram:direct:123")
@@ -47,6 +69,11 @@ class CodeflowSkillFlowTests(unittest.TestCase):
         self.assertIn("Codeflow guard activated", reply["message"])
         self.assertIn("Binding: telegram:-1001:55", reply["message"])
         self.assertNotIn("Install: bash /tmp/codeflow", reply["message"])
+
+    def test_attach_install_message_id_rewrites_install_callback(self):
+        buttons = [[{"text": "Install Enforcer", "callback_data": "cfe:install"}]]
+        out = codeflow_skill_flow.attach_install_message_id(buttons, "6789")
+        self.assertEqual(out, [[{"text": "Install Enforcer", "callback_data": "cfe:install:6789"}]])
 
     def test_build_control_reply_falls_back_to_install_command_without_buttons(self):
         status = {
